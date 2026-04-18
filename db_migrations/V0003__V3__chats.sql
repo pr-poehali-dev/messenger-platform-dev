@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS t_p250553_messenger_platform_d.chats (id SERIAL PRIMARY KEY, type VARCHAR(16) NOT NULL DEFAULT 'personal', name VARCHAR(128), description TEXT, avatar_url TEXT, created_by INTEGER, created_at TIMESTAMPTZ DEFAULT NOW());

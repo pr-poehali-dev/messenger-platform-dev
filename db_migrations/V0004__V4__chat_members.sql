@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS t_p250553_messenger_platform_d.chat_members (id SERIAL PRIMARY KEY, chat_id INTEGER, user_id INTEGER, role VARCHAR(16) DEFAULT 'member', joined_at TIMESTAMPTZ DEFAULT NOW(), last_read_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(chat_id, user_id));

@@ -1,0 +1,30 @@
+{
+  "tests": [
+    {
+      "name": "Register new user",
+      "method": "POST",
+      "path": "/?_path=/register",
+      "body": {"username": "demo_v3", "display_name": "Demo V3", "email": "demo_v3@test.com", "password": "pass1234"},
+      "expectedStatus": 200,
+      "expectedBody": {"token": "string"},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Login user",
+      "method": "POST",
+      "path": "/?_path=/login",
+      "body": {"login": "demo_v3@test.com", "password": "pass1234"},
+      "expectedStatus": 200,
+      "expectedBody": {"token": "string"},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Get chats no auth",
+      "method": "GET",
+      "path": "/?_path=/chats",
+      "expectedStatus": 401,
+      "expectedBody": {"error": "string"},
+      "bodyMatcher": "partial"
+    }
+  ]
+}

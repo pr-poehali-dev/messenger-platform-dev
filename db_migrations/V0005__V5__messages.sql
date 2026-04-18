@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS t_p250553_messenger_platform_d.messages (id SERIAL PRIMARY KEY, chat_id INTEGER, user_id INTEGER, text TEXT, msg_type VARCHAR(16) DEFAULT 'text', file_url TEXT, file_name TEXT, reply_to INTEGER, is_edited BOOLEAN DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW());
