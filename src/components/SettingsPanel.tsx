@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import Icon from "@/components/ui/icon";
 import { api } from "@/lib/api";
 import { getStoredUser, saveSession, getToken, clearSession } from "@/lib/auth";
@@ -15,8 +15,22 @@ export default function SettingsPanel({ onLogout, onUpdated }: Props) {
   const [statusVal, setStatusVal] = useState(user?.status || "online");
   const [loading, setLoading] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url || "");
+  const [avatarLoading, setAvatarLoading] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
 
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
+
+  const handleAvatarUpload = async (file: File) => {
+    setAvatarLoading(true);
+    const res = await api.uploadAvatar(file);
+    if (res.ok) {
+      setAvatarUrl(res.data.url);
+      const storedUser = getStoredUser();
+      if (storedUser) saveSession(getToken(), { ...storedUser, avatar_url: res.data.url });
+    }
+    setAvatarLoading(false);
+  };
 
   const saveProfile = async () => {
     setLoading(true);
@@ -77,12 +91,19 @@ export default function SettingsPanel({ onLogout, onUpdated }: Props) {
             {/* Avatar */}
             <div className="flex items-center gap-4">
               <div className="relative">
-                <div className="w-16 h-16 rounded-full flex items-center justify-center text-xl font-bold" style={{ background: "var(--bg-surface)", color: "var(--accent-cyan)", border: "2px solid var(--border-accent)" }}>
-                  {(form.display_name || user?.username || "?")[0].toUpperCase()}
-                </div>
-                <button className="absolute bottom-0 right-0 w-6 h-6 rounded-full flex items-center justify-center" style={{ background: "var(--accent-cyan)", color: "#0a0e14" }}>
-                  <Icon name="Camera" size={11} />
+                {avatarUrl ? (
+                  <img src={avatarUrl} alt="avatar" className="w-16 h-16 rounded-full object-cover" style={{ border: "2px solid var(--border-accent)" }} />
+                ) : (
+                  <div className="w-16 h-16 rounded-full flex items-center justify-center text-xl font-bold" style={{ background: "var(--bg-surface)", color: "var(--accent-cyan)", border: "2px solid var(--border-accent)" }}>
+                    {(form.display_name || user?.username || "?")[0].toUpperCase()}
+                  </div>
+                )}
+                <button onClick={() => avatarInputRef.current?.click()} disabled={avatarLoading}
+                  className="absolute bottom-0 right-0 w-6 h-6 rounded-full flex items-center justify-center" style={{ background: "var(--accent-cyan)", color: "#0a0e14" }}>
+                  {avatarLoading ? <div className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" /> : <Icon name="Camera" size={11} />}
                 </button>
+                <input ref={avatarInputRef} type="file" accept="image/*" className="hidden"
+                  onChange={e => { const f = e.target.files?.[0]; if (f) handleAvatarUpload(f); e.target.value = ""; }} />
               </div>
               <div>
                 <p className="font-medium text-sm" style={{ color: "var(--text-primary)" }}>{user?.display_name}</p>

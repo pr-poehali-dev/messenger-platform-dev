@@ -238,12 +238,35 @@ def handler(event: dict, context) -> dict:
                 conn.close()
                 return resp(403, {"error": "Нет доступа"})
             cur.execute(f"""
-                SELECT m.id, m.user_id, u.display_name, u.avatar_url, m.text, m.msg_type, m.reply_to, m.is_edited, m.created_at
+                SELECT m.id, m.user_id, u.display_name, u.avatar_url, m.text, m.msg_type,
+                       m.reply_to, m.is_edited, m.created_at, m.file_url, m.file_name, m.file_size, m.file_type, m.voice_duration
                 FROM {SCHEMA}.messages m LEFT JOIN {SCHEMA}.users u ON u.id=m.user_id
                 WHERE m.chat_id=%s AND m.is_deleted=FALSE
                 ORDER BY m.created_at ASC LIMIT %s OFFSET %s
             """, (chat_id, limit, offset))
-            msgs = [{"id": r[0], "user_id": r[1], "display_name": r[2], "avatar_url": r[3], "text": r[4], "type": r[5], "reply_to": r[6], "is_edited": r[7], "created_at": r[8].isoformat(), "mine": r[1] == uid} for r in cur.fetchall()]
+            rows = cur.fetchall()
+            msgs = []
+            for r in rows:
+                mid2, uid2, dname2, av2, txt2, mtype2, rto2, edited2, cat2, furl2, fname2, fsize2, ftype2, vdur2 = r
+                # Реакции
+                cur3 = conn.cursor()
+                cur3.execute(f"SELECT emoji, COUNT(*), bool_or(user_id=%s) FROM {SCHEMA}.message_reactions WHERE message_id=%s GROUP BY emoji", (uid, mid2))
+                reactions = [{"emoji": rx[0], "count": int(rx[1]), "mine": rx[2]} for rx in cur3.fetchall()]
+                # Reply preview
+                reply_preview = None
+                if rto2:
+                    cur4 = conn.cursor()
+                    cur4.execute(f"SELECT text, u2.display_name FROM {SCHEMA}.messages m2 LEFT JOIN {SCHEMA}.users u2 ON u2.id=m2.user_id WHERE m2.id=%s", (rto2,))
+                    rp = cur4.fetchone()
+                    if rp:
+                        reply_preview = {"text": rp[0], "display_name": rp[1]}
+                msgs.append({
+                    "id": mid2, "user_id": uid2, "display_name": dname2, "avatar_url": av2,
+                    "text": txt2, "type": mtype2, "reply_to": rto2, "reply_preview": reply_preview,
+                    "is_edited": edited2, "created_at": cat2.isoformat(), "mine": uid2 == uid,
+                    "file_url": furl2, "file_name": fname2, "file_size": fsize2, "file_type": ftype2,
+                    "voice_duration": vdur2, "reactions": reactions
+                })
             cur.execute(f"UPDATE {SCHEMA}.chat_members SET last_read_at=NOW() WHERE chat_id=%s AND user_id=%s", (chat_id, uid))
             conn.commit()
             conn.close()
@@ -468,6 +491,130 @@ def handler(event: dict, context) -> dict:
         conn.commit()
         conn.close()
         return resp(200, {"ok": True})
+
+    # ── REACTIONS ─────────────────────────────────────────
+
+    if path.startswith("/reactions") and method == "POST":
+        conn = get_conn()
+        user = get_user(token, conn)
+        if not user:
+            conn.close()
+            return resp(401, {"error": "Не авторизован"})
+        uid = user[0]
+        msg_id = body.get("message_id")
+        emoji = body.get("emoji", "")
+        if not msg_id or not emoji:
+            conn.close()
+            return resp(400, {"error": "message_id и emoji обязательны"})
+        cur = conn.cursor()
+        # Toggle: если уже есть — убираем, если нет — добавляем
+        cur.execute(f"SELECT id FROM {SCHEMA}.message_reactions WHERE message_id=%s AND user_id=%s AND emoji=%s", (msg_id, uid, emoji))
+        existing = cur.fetchone()
+        if existing:
+            cur.execute(f"UPDATE {SCHEMA}.message_reactions SET emoji='' WHERE id=%s", (existing[0],))
+            # физически удалять нельзя — обновляем пустой строкой (уберём в SELECT)
+            cur.execute(f"DELETE FROM {SCHEMA}.message_reactions WHERE id=%s", (existing[0],))
+            action = "removed"
+        else:
+            cur.execute(f"INSERT INTO {SCHEMA}.message_reactions (message_id, user_id, emoji) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", (msg_id, uid, emoji))
+            action = "added"
+        conn.commit()
+        # Получить все реакции на это сообщение
+        cur.execute(f"SELECT emoji, COUNT(*) FROM {SCHEMA}.message_reactions WHERE message_id=%s GROUP BY emoji", (msg_id,))
+        reactions = [{"emoji": r[0], "count": r[1]} for r in cur.fetchall()]
+        conn.close()
+        return resp(200, {"ok": True, "action": action, "reactions": reactions})
+
+    if path.startswith("/reactions/") and method == "GET":
+        msg_id = int(path.split("/")[2])
+        conn = get_conn()
+        user = get_user(token, conn)
+        if not user:
+            conn.close()
+            return resp(401, {"error": "Не авторизован"})
+        uid = user[0]
+        cur = conn.cursor()
+        cur.execute(f"SELECT emoji, COUNT(*), bool_or(user_id=%s) FROM {SCHEMA}.message_reactions WHERE message_id=%s GROUP BY emoji", (uid, msg_id))
+        reactions = [{"emoji": r[0], "count": r[1], "mine": r[2]} for r in cur.fetchall()]
+        conn.close()
+        return resp(200, {"reactions": reactions})
+
+    # ── CHAT MEMBERS ──────────────────────────────────────
+
+    if path.startswith("/chats/") and "/members" in path:
+        parts = path.split("/")
+        chat_id = int(parts[2])
+        conn = get_conn()
+        user = get_user(token, conn)
+        if not user:
+            conn.close()
+            return resp(401, {"error": "Не авторизован"})
+        uid = user[0]
+
+        if method == "GET":
+            cur = conn.cursor()
+            cur.execute(f"""
+                SELECT u.id, u.username, u.display_name, u.avatar_url, u.status, cm.role
+                FROM {SCHEMA}.chat_members cm JOIN {SCHEMA}.users u ON u.id=cm.user_id
+                WHERE cm.chat_id=%s ORDER BY cm.role, u.display_name
+            """, (chat_id,))
+            members = [{"id": r[0], "username": r[1], "display_name": r[2], "avatar_url": r[3], "status": r[4], "role": r[5]} for r in cur.fetchall()]
+            conn.close()
+            return resp(200, {"members": members})
+
+        if method == "POST":
+            # Добавить участника
+            new_uid = body.get("user_id")
+            cur = conn.cursor()
+            cur.execute(f"SELECT role FROM {SCHEMA}.chat_members WHERE chat_id=%s AND user_id=%s", (chat_id, uid))
+            row = cur.fetchone()
+            if not row or row[0] not in ("admin",):
+                conn.close()
+                return resp(403, {"error": "Только администратор может добавлять"})
+            cur.execute(f"INSERT INTO {SCHEMA}.chat_members (chat_id, user_id, role) VALUES (%s,%s,'member') ON CONFLICT DO NOTHING", (chat_id, new_uid))
+            conn.commit()
+            conn.close()
+            return resp(200, {"ok": True})
+
+        if method == "DELETE":
+            # Удалить участника (admin) или выйти самому
+            target_uid = body.get("user_id", uid)
+            cur = conn.cursor()
+            if target_uid != uid:
+                cur.execute(f"SELECT role FROM {SCHEMA}.chat_members WHERE chat_id=%s AND user_id=%s", (chat_id, uid))
+                row = cur.fetchone()
+                if not row or row[0] != "admin":
+                    conn.close()
+                    return resp(403, {"error": "Только администратор"})
+            cur.execute(f"UPDATE {SCHEMA}.chat_members SET role='removed' WHERE chat_id=%s AND user_id=%s", (chat_id, target_uid))
+            conn.commit()
+            conn.close()
+            return resp(200, {"ok": True})
+
+    # ── USERS SEARCH (public) ─────────────────────────────
+
+    if path == "/users/search" and method == "GET":
+        q = (params.get("q") or "").strip()
+        conn = get_conn()
+        user = get_user(token, conn)
+        if not user:
+            conn.close()
+            return resp(401, {"error": "Не авторизован"})
+        uid = user[0]
+        if len(q) < 2:
+            conn.close()
+            return resp(200, {"users": []})
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT u.id, u.username, u.display_name, u.avatar_url, u.status,
+                   (SELECT 1 FROM {SCHEMA}.contacts WHERE user_id=%s AND contact_id=u.id AND status='accepted') as is_contact
+            FROM {SCHEMA}.users u
+            WHERE u.id!=%s AND (u.username ILIKE %s OR u.display_name ILIKE %s)
+            LIMIT 20
+        """, (uid, uid, f"%{q}%", f"%{q}%"))
+        users = [{"id": r[0], "username": r[1], "display_name": r[2], "avatar_url": r[3], "status": r[4], "is_contact": bool(r[5])} for r in cur.fetchall()]
+        conn.close()
+        return resp(200, {"users": users})
 
     # ── SEARCH ────────────────────────────────────────────
 

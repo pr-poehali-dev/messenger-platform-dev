@@ -1,0 +1,13 @@
+{
+  "tests": [
+    {
+      "name": "Upload no auth",
+      "method": "POST",
+      "path": "/?_path=/upload/file",
+      "body": {},
+      "expectedStatus": 401,
+      "expectedBody": {"error": "string"},
+      "bodyMatcher": "partial"
+    }
+  ]
+}

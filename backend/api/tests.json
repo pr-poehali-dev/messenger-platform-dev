@@ -4,7 +4,7 @@
       "name": "Register new user",
       "method": "POST",
       "path": "/?_path=/register",
-      "body": {"username": "demo_v3", "display_name": "Demo V3", "email": "demo_v3@test.com", "password": "pass1234"},
+      "body": {"username": "demo_v9x7", "display_name": "Demo V9x7", "email": "demo_v9x7@test.com", "password": "pass1234"},
       "expectedStatus": 200,
       "expectedBody": {"token": "string"},
       "bodyMatcher": "partial"

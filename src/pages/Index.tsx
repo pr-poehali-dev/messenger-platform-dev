@@ -4,11 +4,23 @@ import AuthScreen from "@/components/AuthScreen";
 import CreateChatModal from "@/components/CreateChatModal";
 import CreateChannelModal from "@/components/CreateChannelModal";
 import SettingsPanel from "@/components/SettingsPanel";
+import MessageBubble from "@/components/MessageBubble";
+import VoiceRecorder from "@/components/VoiceRecorder";
+import GroupInfoPanel from "@/components/GroupInfoPanel";
+import AddContactModal from "@/components/AddContactModal";
 import { api } from "@/lib/api";
 import { isLoggedIn, getStoredUser } from "@/lib/auth";
 
 interface Chat { id: number; type: string; name: string; avatar_url?: string; last_text: string; last_time?: string; unread: number; online: boolean; }
-interface Message { id: number; user_id: number; display_name: string; avatar_url?: string; text: string; type: string; reply_to?: number; is_edited: boolean; created_at: string; mine: boolean; }
+interface Reaction { emoji: string; count: number; mine: boolean; }
+interface ReplyPreview { text: string; display_name: string; }
+interface Message {
+  id: number; user_id: number; display_name: string; avatar_url?: string;
+  text: string; type: string; reply_to?: number; reply_preview?: ReplyPreview;
+  is_edited: boolean; created_at: string; mine: boolean;
+  file_url?: string; file_name?: string; file_size?: number; file_type?: string;
+  voice_duration?: number; reactions: Reaction[];
+}
 interface Contact { id: number; username: string; display_name: string; avatar_url?: string; status: string; }
 interface Channel { id: number; name: string; description?: string; subscribers_count: number; is_owner: boolean; subscribed: boolean; last_post?: string; last_time?: string; }
 interface Notification { id: number; type: string; title?: string; body: string; is_read: boolean; created_at: string; }
@@ -18,15 +30,13 @@ type Section = "chats" | "channels" | "notifications" | "contacts" | "settings";
 function avatarLetters(name: string) {
   return name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
 }
-
-const COLORS = ["#00d4ff", "#00e5b3", "#a78bfa", "#f59e0b", "#f472b6", "#34d399", "#60a5fa", "#fb923c"];
+const COLORS = ["#00d4ff","#00e5b3","#a78bfa","#f59e0b","#f472b6","#34d399","#60a5fa","#fb923c"];
 function colorFor(id: number | string) { return COLORS[String(id).charCodeAt(0) % COLORS.length]; }
 
 function formatTime(iso?: string | null) {
   if (!iso) return "";
   const d = new Date(iso);
-  const now = new Date();
-  const diff = now.getTime() - d.getTime();
+  const diff = Date.now() - d.getTime();
   if (diff < 86400000) return d.toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" });
   if (diff < 604800000) return d.toLocaleDateString("ru", { weekday: "short" });
   return d.toLocaleDateString("ru", { day: "2-digit", month: "2-digit" });
@@ -41,9 +51,14 @@ export default function Index() {
   const [messageInput, setMessageInput] = useState("");
   const [showCreateChat, setShowCreateChat] = useState(false);
   const [showCreateChannel, setShowCreateChannel] = useState(false);
+  const [showAddContact, setShowAddContact] = useState(false);
   const [editingMsg, setEditingMsg] = useState<Message | null>(null);
+  const [replyingMsg, setReplyingMsg] = useState<Message | null>(null);
+  const [showVoice, setShowVoice] = useState(false);
+  const [showGroupInfo, setShowGroupInfo] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState("");
 
-  // Data
   const [chats, setChats] = useState<Chat[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -54,6 +69,8 @@ export default function Index() {
 
   const user = getStoredUser();
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   const loadChats = useCallback(async () => {
     const res = await api.getChats();
@@ -77,16 +94,10 @@ export default function Index() {
 
   const loadNotifications = useCallback(async () => {
     const res = await api.getNotifications();
-    if (res.ok) {
-      setNotifications(res.data.notifications || []);
-      setUnreadNotifs(res.data.unread_count || 0);
-    }
+    if (res.ok) { setNotifications(res.data.notifications || []); setUnreadNotifs(res.data.unread_count || 0); }
   }, []);
 
-  useEffect(() => {
-    if (!authed) return;
-    loadChats();
-  }, [authed, loadChats]);
+  useEffect(() => { if (authed) loadChats(); }, [authed, loadChats]);
 
   useEffect(() => {
     if (!authed) return;
@@ -95,29 +106,22 @@ export default function Index() {
     if (activeSection === "notifications") loadNotifications();
   }, [activeSection, authed, loadContacts, loadChannels, loadNotifications]);
 
-  useEffect(() => {
-    if (activeChat) loadMessages(activeChat.id);
-  }, [activeChat, loadMessages]);
+  useEffect(() => { if (activeChat) loadMessages(activeChat.id); }, [activeChat, loadMessages]);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  // Poll messages every 3s when chat is open
   useEffect(() => {
     if (!activeChat || !authed) return;
-    const interval = setInterval(() => loadMessages(activeChat.id), 3000);
-    return () => clearInterval(interval);
+    const t = setInterval(() => loadMessages(activeChat.id), 4000);
+    return () => clearInterval(t);
   }, [activeChat, authed, loadMessages]);
 
-  // Poll chats list every 5s
   useEffect(() => {
     if (!authed) return;
-    const interval = setInterval(loadChats, 5000);
-    return () => clearInterval(interval);
+    const t = setInterval(loadChats, 6000);
+    return () => clearInterval(t);
   }, [authed, loadChats]);
 
-  // Global search
   useEffect(() => {
     if (searchQuery.length < 2) { setSearchResults(null); return; }
     const t = setTimeout(async () => {
@@ -136,10 +140,39 @@ export default function Index() {
       loadMessages(activeChat.id);
       return;
     }
-    const res = await api.sendMessage(activeChat.id, messageInput.trim());
+    const res = await api.sendMessage(activeChat.id, messageInput.trim(), replyingMsg?.id);
     if (res.ok) {
       setMessageInput("");
-      setMessages(prev => [...prev, res.data]);
+      setReplyingMsg(null);
+      setMessages(prev => [...prev, { ...res.data, reactions: [] }]);
+      loadChats();
+    }
+  };
+
+  const handleFileUpload = async (file: File, isImage = false) => {
+    if (!activeChat) return;
+    setUploadingFile(true);
+    setUploadProgress(isImage ? "Загружаю изображение..." : "Загружаю файл...");
+    const res = await api.uploadFile(file, activeChat.id);
+    setUploadingFile(false);
+    setUploadProgress("");
+    if (res.ok && res.data.message) {
+      setMessages(prev => [...prev, { ...res.data.message, type: res.data.type, reactions: [] }]);
+      loadChats();
+    }
+  };
+
+  const handleVoiceSend = async (blob: Blob, duration: number) => {
+    if (!activeChat) return;
+    setShowVoice(false);
+    setUploadingFile(true);
+    setUploadProgress("Отправляю голосовое...");
+    const file = new File([blob], "voice.webm", { type: "audio/webm" });
+    const res = await api.uploadFile(file, activeChat.id, "", duration);
+    setUploadingFile(false);
+    setUploadProgress("");
+    if (res.ok && res.data.message) {
+      setMessages(prev => [...prev, { ...res.data.message, type: "voice", reactions: [] }]);
       loadChats();
     }
   };
@@ -149,10 +182,11 @@ export default function Index() {
     setMessages(prev => prev.filter(m => m.id !== id));
   };
 
-  const markAllNotifRead = async () => {
-    await api.markAllRead();
-    loadNotifications();
+  const handleReactionUpdate = (msgId: number, reactions: Reaction[]) => {
+    setMessages(prev => prev.map(m => m.id === msgId ? { ...m, reactions } : m));
   };
+
+  const markAllNotifRead = async () => { await api.markAllRead(); loadNotifications(); };
 
   const navItems: { section: Section; icon: string; label: string; badge?: number }[] = [
     { section: "chats", icon: "MessageSquare", label: "Чаты", badge: chats.reduce((a, c) => a + c.unread, 0) || undefined },
@@ -178,13 +212,11 @@ export default function Index() {
             <span style={{ fontSize: 16, fontWeight: 700, color: "#0a0e14" }}>V</span>
           </div>
         </div>
-
         {navItems.map(item => (
           <button key={item.section} onClick={() => setActiveSection(item.section)}
             className="relative w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200"
             style={{ background: activeSection === item.section ? "var(--bg-active)" : "transparent", color: activeSection === item.section ? "var(--accent-cyan)" : "var(--text-muted)" }}
-            title={item.label}
-          >
+            title={item.label}>
             <Icon name={item.icon} size={20} />
             {item.badge ? (
               <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold" style={{ background: "var(--accent-cyan)", color: "#0a0e14" }}>
@@ -194,7 +226,6 @@ export default function Index() {
             {activeSection === item.section && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-r-full" style={{ background: "var(--accent-cyan)" }} />}
           </button>
         ))}
-
         <div className="mt-auto">
           <button onClick={() => setActiveSection("settings")} className="relative w-9 h-9 rounded-full flex items-center justify-center font-bold text-xs" style={{ background: "var(--bg-surface)", color: "var(--accent-cyan)", border: "2px solid var(--border-accent)" }}>
             {user ? avatarLetters(user.display_name) : "?"}
@@ -227,35 +258,35 @@ export default function Index() {
                   <Icon name="Plus" size={15} />
                 </button>
               )}
+              {activeSection === "contacts" && (
+                <button onClick={() => setShowAddContact(true)} className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ color: "var(--text-muted)" }}>
+                  <Icon name="UserPlus" size={15} />
+                </button>
+              )}
             </div>
           </div>
-
           {(showSearch || activeSection !== "chats") && (
             <div className="relative animate-fade-in">
               <Icon name="Search" size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
               <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Поиск..."
-                className="w-full pl-8 pr-3 py-2 rounded-lg outline-none transition-all"
+                className="w-full pl-8 pr-3 py-2 rounded-lg outline-none"
                 style={{ background: "var(--bg-surface)", border: "1px solid var(--border-subtle)", color: "var(--text-primary)", fontSize: 13 }} />
             </div>
           )}
         </div>
 
-        {/* Chats */}
+        {/* CHATS LIST */}
         {activeSection === "chats" && (
           <div className="flex-1 overflow-y-auto px-2 pb-3">
             {searchResults && (
-              <div className="px-2 mb-2 animate-fade-in">
+              <div className="px-1 mb-2 animate-fade-in">
                 {searchResults.users.length > 0 && (
-                  <>
-                    <p className="text-[10px] px-1 mb-1" style={{ color: "var(--text-muted)" }}>ЛЮДИ</p>
+                  <><p className="text-[10px] px-2 mb-1" style={{ color: "var(--text-muted)" }}>ЛЮДИ</p>
                     {searchResults.users.map(u => (
-                      <div key={u.id} className="flex items-center gap-2.5 px-3 py-2 rounded-xl mb-0.5"
-                        style={{ background: "var(--bg-surface)" }}>
-                        <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0" style={{ background: `${colorFor(u.id)}22`, color: colorFor(u.id) }}>
-                          {avatarLetters(u.display_name)}
-                        </div>
+                      <div key={u.id} className="flex items-center gap-2.5 px-3 py-2 rounded-xl mb-0.5" style={{ background: "var(--bg-surface)" }}>
+                        <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold" style={{ background: `${colorFor(u.id)}22`, color: colorFor(u.id) }}>{avatarLetters(u.display_name)}</div>
                         <div className="flex-1 min-w-0">
-                          <p className="text-xs font-medium truncate" style={{ color: "var(--text-primary)" }}>{u.display_name}</p>
+                          <p className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>{u.display_name}</p>
                           <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>@{u.username}</p>
                         </div>
                       </div>
@@ -263,8 +294,7 @@ export default function Index() {
                   </>
                 )}
                 {searchResults.messages.length > 0 && (
-                  <>
-                    <p className="text-[10px] px-1 mb-1 mt-2" style={{ color: "var(--text-muted)" }}>СООБЩЕНИЯ</p>
+                  <><p className="text-[10px] px-2 mb-1 mt-2" style={{ color: "var(--text-muted)" }}>СООБЩЕНИЯ</p>
                     {searchResults.messages.map(m => (
                       <button key={m.id} className="w-full flex flex-col px-3 py-2 rounded-xl mb-0.5 text-left"
                         style={{ background: "var(--bg-surface)" }}
@@ -284,7 +314,7 @@ export default function Index() {
               </div>
             )}
             {filteredChats.map((chat, i) => (
-              <button key={chat.id} onClick={() => setActiveChat(chat)}
+              <button key={chat.id} onClick={() => { setActiveChat(chat); setShowGroupInfo(false); }}
                 className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-150 text-left mb-0.5 animate-slide-in"
                 style={{ background: activeChat?.id === chat.id ? "var(--bg-active)" : "transparent", animationDelay: `${i * 25}ms`, borderLeft: activeChat?.id === chat.id ? "2px solid var(--accent-cyan)" : "2px solid transparent" }}>
                 <div className="relative flex-shrink-0">
@@ -308,24 +338,19 @@ export default function Index() {
           </div>
         )}
 
-        {/* Channels */}
+        {/* CHANNELS */}
         {activeSection === "channels" && (
           <div className="flex-1 overflow-y-auto px-2 pb-3">
-            {channels.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-12 gap-3">
-                <Icon name="Radio" size={28} style={{ color: "var(--text-muted)" }} />
-                <p className="text-sm" style={{ color: "var(--text-muted)" }}>Нет каналов</p>
-              </div>
-            )}
+            {channels.length === 0 && <div className="flex flex-col items-center justify-center py-12 gap-3"><Icon name="Radio" size={28} style={{ color: "var(--text-muted)" }} /><p className="text-sm" style={{ color: "var(--text-muted)" }}>Нет каналов</p></div>}
             {channels.filter(c => !searchQuery || c.name.toLowerCase().includes(searchQuery.toLowerCase())).map((ch, i) => (
               <button key={ch.id} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all mb-0.5 text-left animate-slide-in" style={{ animationDelay: `${i * 35}ms` }}>
                 <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: `${colorFor(ch.id)}22`, color: colorFor(ch.id) }}>
                   <Icon name="Radio" size={16} />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
                     <span className="font-medium truncate" style={{ color: "var(--text-primary)", fontSize: 13 }}>{ch.name}</span>
-                    {ch.is_owner && <span className="text-[9px] px-1.5 py-0.5 rounded-full" style={{ background: "var(--accent-glow)", color: "var(--accent-cyan)" }}>Мой</span>}
+                    {ch.is_owner && <span className="text-[9px] px-1.5 py-0.5 rounded-full flex-shrink-0" style={{ background: "var(--accent-glow)", color: "var(--accent-cyan)" }}>Мой</span>}
                   </div>
                   <div className="flex items-center gap-1 mt-0.5">
                     <Icon name="Users" size={10} style={{ color: "var(--text-muted)" }} />
@@ -343,18 +368,11 @@ export default function Index() {
           </div>
         )}
 
-        {/* Notifications */}
+        {/* NOTIFICATIONS */}
         {activeSection === "notifications" && (
           <div className="flex-1 overflow-y-auto px-2 pb-3">
-            <div className="px-3 mb-3">
-              <button onClick={markAllNotifRead} className="text-xs" style={{ color: "var(--accent-cyan)" }}>Отметить все прочитанными</button>
-            </div>
-            {notifications.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-12 gap-3">
-                <Icon name="BellOff" size={28} style={{ color: "var(--text-muted)" }} />
-                <p className="text-sm" style={{ color: "var(--text-muted)" }}>Нет уведомлений</p>
-              </div>
-            )}
+            <div className="px-3 mb-3"><button onClick={markAllNotifRead} className="text-xs" style={{ color: "var(--accent-cyan)" }}>Отметить все прочитанными</button></div>
+            {notifications.length === 0 && <div className="flex flex-col items-center justify-center py-12 gap-3"><Icon name="BellOff" size={28} style={{ color: "var(--text-muted)" }} /><p className="text-sm" style={{ color: "var(--text-muted)" }}>Нет уведомлений</p></div>}
             {notifications.map((n, i) => (
               <div key={n.id} className="flex items-start gap-3 px-3 py-3 rounded-xl mb-0.5 animate-fade-in" style={{ background: n.is_read ? "transparent" : "var(--bg-surface)", animationDelay: `${i * 35}ms` }}>
                 <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: "var(--accent-glow)", color: "var(--accent-cyan)" }}>
@@ -370,13 +388,16 @@ export default function Index() {
           </div>
         )}
 
-        {/* Contacts */}
+        {/* CONTACTS */}
         {activeSection === "contacts" && (
           <div className="flex-1 overflow-y-auto px-2 pb-3">
             {contacts.length === 0 && (
               <div className="flex flex-col items-center justify-center py-12 gap-3">
                 <Icon name="UserPlus" size={28} style={{ color: "var(--text-muted)" }} />
-                <p className="text-sm text-center" style={{ color: "var(--text-muted)" }}>Нет контактов.<br />Найдите людей через поиск</p>
+                <p className="text-sm text-center" style={{ color: "var(--text-muted)" }}>Нет контактов</p>
+                <button onClick={() => setShowAddContact(true)} className="px-4 py-2 rounded-xl text-xs font-medium" style={{ background: "var(--accent-glow)", color: "var(--accent-cyan)", border: "1px solid var(--border-accent)" }}>
+                  Найти людей
+                </button>
               </div>
             )}
             {contacts.filter(c => !searchQuery || c.display_name.toLowerCase().includes(searchQuery.toLowerCase())).map((c, i) => (
@@ -406,126 +427,141 @@ export default function Index() {
           </div>
         )}
 
-        {/* Settings */}
         {activeSection === "settings" && <div className="flex-1 overflow-hidden" />}
       </div>
 
-      {/* Main Area */}
-      <div className="flex-1 flex flex-col" style={{ background: "var(--bg-message)" }}>
+      {/* MAIN AREA */}
+      <div className="flex-1 flex flex-col overflow-hidden" style={{ background: "var(--bg-message)" }}>
         {activeSection === "settings" ? (
           <SettingsPanel onLogout={() => setAuthed(false)} onUpdated={() => {}} />
         ) : activeSection === "chats" && activeChat ? (
-          <>
-            {/* Chat Header */}
-            <div className="flex items-center gap-3 px-5 py-3.5" style={{ background: "var(--bg-panel)", borderBottom: "1px solid var(--border-subtle)" }}>
-              <div className="relative">
-                <div className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold" style={{ background: `${colorFor(activeChat.id)}22`, color: colorFor(activeChat.id) }}>
-                  {activeChat.type === "group" ? <Icon name="Users" size={16} /> : avatarLetters(activeChat.name)}
-                </div>
-                {activeChat.online && <div className="absolute bottom-0 right-0 w-2 h-2 rounded-full border-2 animate-pulse-dot" style={{ background: "var(--online)", borderColor: "var(--bg-panel)" }} />}
-              </div>
-              <div>
-                <p className="font-semibold text-sm" style={{ color: "var(--text-primary)" }}>{activeChat.name}</p>
-                <p style={{ color: activeChat.online ? "var(--online)" : "var(--text-muted)", fontSize: 11 }}>
-                  {activeChat.type === "group" ? "Группа" : activeChat.online ? "В сети" : "Не в сети"}
-                </p>
-              </div>
-              <div className="ml-auto flex items-center gap-1">
-                {["Phone", "Video", "Search", "MoreVertical"].map(icon => (
-                  <button key={icon} className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ color: "var(--text-secondary)" }}>
-                    <Icon name={icon} size={17} />
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-2.5">
-              {messages.length === 0 && (
-                <div className="flex flex-col items-center justify-center flex-1 gap-3">
-                  <Icon name="MessageCircle" size={32} style={{ color: "var(--text-muted)" }} />
-                  <p style={{ color: "var(--text-muted)", fontSize: 13 }}>Начните диалог</p>
-                </div>
-              )}
-              {messages.map((msg, i) => (
-                <div key={msg.id} className={`flex gap-2.5 group animate-fade-in ${msg.mine ? "flex-row-reverse" : ""}`} style={{ animationDelay: `${Math.min(i * 30, 300)}ms` }}>
-                  {!msg.mine && (
-                    <div className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 mt-auto" style={{ background: `${colorFor(msg.user_id)}22`, color: colorFor(msg.user_id) }}>
-                      {avatarLetters(msg.display_name || "?")}
-                    </div>
-                  )}
-                  <div className={`max-w-[65%] flex flex-col gap-0.5 ${msg.mine ? "items-end" : "items-start"}`}>
-                    {!msg.mine && <span className="px-1" style={{ color: colorFor(msg.user_id), fontSize: 11 }}>{msg.display_name}</span>}
-                    <div className="px-4 py-2.5 relative" style={{
-                      background: msg.mine ? "linear-gradient(135deg, #00b4d8, #00d4ff)" : "var(--bg-surface)",
-                      color: msg.mine ? "#0a0e14" : "var(--text-primary)",
-                      borderRadius: msg.mine ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
-                      boxShadow: msg.mine ? "0 2px 12px rgba(0,212,255,0.2)" : "none",
-                    }}>
-                      <p className="leading-relaxed" style={{ fontSize: 13 }}>{msg.text}</p>
-                      {msg.is_edited && <span className="text-[9px] opacity-60 ml-1">изм.</span>}
-                      {/* Actions */}
-                      {msg.mine && (
-                        <div className="absolute -top-7 right-0 hidden group-hover:flex gap-0.5 px-1 py-1 rounded-lg" style={{ background: "var(--bg-panel)", border: "1px solid var(--border-subtle)" }}>
-                          <button onClick={() => { setEditingMsg(msg); setMessageInput(msg.text); }} className="w-6 h-6 rounded flex items-center justify-center" style={{ color: "var(--accent-cyan)" }}>
-                            <Icon name="Pencil" size={11} />
-                          </button>
-                          <button onClick={() => deleteMsg(msg.id)} className="w-6 h-6 rounded flex items-center justify-center" style={{ color: "#f87171" }}>
-                            <Icon name="Trash2" size={11} />
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <div className={`flex items-center gap-1 px-1 ${msg.mine ? "flex-row-reverse" : ""}`}>
-                      <span style={{ color: "var(--text-muted)", fontSize: 10 }}>{formatTime(msg.created_at)}</span>
-                      {msg.mine && <Icon name="CheckCheck" size={12} style={{ color: "var(--accent-cyan)" }} />}
-                    </div>
+          showGroupInfo && activeChat.type === "group" ? (
+            <GroupInfoPanel chatId={activeChat.id} chatName={activeChat.name} onClose={() => setShowGroupInfo(false)} />
+          ) : (
+            <>
+              {/* Chat Header */}
+              <div className="flex items-center gap-3 px-5 py-3.5 flex-shrink-0" style={{ background: "var(--bg-panel)", borderBottom: "1px solid var(--border-subtle)" }}>
+                <div className="relative">
+                  <div className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold" style={{ background: `${colorFor(activeChat.id)}22`, color: colorFor(activeChat.id) }}>
+                    {activeChat.type === "group" ? <Icon name="Users" size={16} /> : avatarLetters(activeChat.name)}
                   </div>
+                  {activeChat.online && <div className="absolute bottom-0 right-0 w-2 h-2 rounded-full border-2 animate-pulse-dot" style={{ background: "var(--online)", borderColor: "var(--bg-panel)" }} />}
                 </div>
-              ))}
-              <div ref={messagesEndRef} />
-            </div>
-
-            {/* Input */}
-            <div className="px-4 py-3" style={{ background: "var(--bg-panel)", borderTop: "1px solid var(--border-subtle)" }}>
-              {editingMsg && (
-                <div className="flex items-center gap-2 mb-2 px-3 py-1.5 rounded-lg animate-fade-in" style={{ background: "var(--bg-surface)" }}>
-                  <Icon name="Pencil" size={12} style={{ color: "var(--accent-cyan)" }} />
-                  <span className="text-xs flex-1 truncate" style={{ color: "var(--text-secondary)" }}>Редактирование: {editingMsg.text}</span>
-                  <button onClick={() => { setEditingMsg(null); setMessageInput(""); }} style={{ color: "var(--text-muted)" }}>
-                    <Icon name="X" size={14} />
-                  </button>
+                <button className="flex-1 text-left" onClick={() => activeChat.type === "group" && setShowGroupInfo(true)}>
+                  <p className="font-semibold text-sm" style={{ color: "var(--text-primary)" }}>{activeChat.name}</p>
+                  <p style={{ color: activeChat.online ? "var(--online)" : "var(--text-muted)", fontSize: 11 }}>
+                    {activeChat.type === "group" ? "Нажмите, чтобы открыть группу" : activeChat.online ? "В сети" : "Не в сети"}
+                  </p>
+                </button>
+                <div className="flex items-center gap-1">
+                  {["Phone", "Video", "MoreVertical"].map(icon => (
+                    <button key={icon} className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ color: "var(--text-secondary)" }}>
+                      <Icon name={icon} size={17} />
+                    </button>
+                  ))}
                 </div>
-              )}
-              <div className="flex items-end gap-2">
-                <button className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ color: "var(--text-secondary)" }}>
-                  <Icon name="Paperclip" size={17} />
-                </button>
-                <textarea
-                  value={messageInput}
-                  onChange={e => setMessageInput(e.target.value)}
-                  placeholder="Написать сообщение..."
-                  rows={1}
-                  className="flex-1 px-4 py-2.5 rounded-xl resize-none outline-none transition-all"
-                  style={{ background: "var(--bg-surface)", border: "1px solid var(--border-subtle)", color: "var(--text-primary)", fontSize: 13, lineHeight: "1.5", maxHeight: 120 }}
-                  onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-                />
-                <button className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ color: "var(--text-secondary)" }}>
-                  <Icon name="Smile" size={17} />
-                </button>
-                <button
-                  onClick={sendMessage}
-                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all"
-                  style={{ background: messageInput.trim() ? "linear-gradient(135deg, #00b4d8, #00d4ff)" : "var(--bg-surface)", color: messageInput.trim() ? "#0a0e14" : "var(--text-muted)", boxShadow: messageInput.trim() ? "0 2px 12px rgba(0,212,255,0.3)" : "none" }}
-                >
-                  <Icon name={messageInput.trim() ? "Send" : "Mic"} size={16} />
-                </button>
               </div>
-            </div>
-          </>
+
+              {/* Messages */}
+              <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-2">
+                {messages.length === 0 && (
+                  <div className="flex flex-col items-center justify-center flex-1 gap-3 py-12">
+                    <Icon name="MessageCircle" size={32} style={{ color: "var(--text-muted)" }} />
+                    <p style={{ color: "var(--text-muted)", fontSize: 13 }}>Начните диалог</p>
+                  </div>
+                )}
+                {messages.map((msg, i) => (
+                  <div key={msg.id} className="animate-fade-in" style={{ animationDelay: `${Math.min(i * 20, 200)}ms` }}>
+                    <MessageBubble
+                      msg={msg}
+                      color={colorFor(msg.user_id)}
+                      onEdit={m => { setEditingMsg(m); setMessageInput(m.text); }}
+                      onDelete={deleteMsg}
+                      onReply={m => setReplyingMsg(m)}
+                      onReactionUpdate={handleReactionUpdate}
+                    />
+                  </div>
+                ))}
+                {uploadingFile && (
+                  <div className="flex items-center gap-2 px-4 py-2 rounded-xl animate-fade-in" style={{ background: "var(--bg-surface)" }}>
+                    <div className="typing-dots flex gap-0.5"><span /><span /><span /></div>
+                    <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>{uploadProgress}</span>
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+
+              {/* Input Area */}
+              <div className="flex-shrink-0 px-4 py-3" style={{ background: "var(--bg-panel)", borderTop: "1px solid var(--border-subtle)" }}>
+                {/* Edit indicator */}
+                {editingMsg && (
+                  <div className="flex items-center gap-2 mb-2 px-3 py-1.5 rounded-lg animate-fade-in" style={{ background: "var(--bg-surface)" }}>
+                    <Icon name="Pencil" size={12} style={{ color: "var(--accent-cyan)" }} />
+                    <span className="text-xs flex-1 truncate" style={{ color: "var(--text-secondary)" }}>Редактирование: {editingMsg.text}</span>
+                    <button onClick={() => { setEditingMsg(null); setMessageInput(""); }} style={{ color: "var(--text-muted)" }}><Icon name="X" size={14} /></button>
+                  </div>
+                )}
+                {/* Reply indicator */}
+                {replyingMsg && !editingMsg && (
+                  <div className="flex items-center gap-2 mb-2 px-3 py-1.5 rounded-lg animate-fade-in" style={{ background: "var(--bg-surface)", borderLeft: "2px solid var(--accent-cyan)" }}>
+                    <Icon name="Reply" size={12} style={{ color: "var(--accent-cyan)" }} />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-[10px] font-medium block" style={{ color: "var(--accent-cyan)" }}>{replyingMsg.display_name}</span>
+                      <span className="text-xs truncate block" style={{ color: "var(--text-secondary)" }}>{replyingMsg.text || "📎 Файл"}</span>
+                    </div>
+                    <button onClick={() => setReplyingMsg(null)} style={{ color: "var(--text-muted)" }}><Icon name="X" size={14} /></button>
+                  </div>
+                )}
+
+                {/* Voice recorder */}
+                {showVoice ? (
+                  <VoiceRecorder onSend={handleVoiceSend} onCancel={() => setShowVoice(false)} />
+                ) : (
+                  <div className="flex items-end gap-2">
+                    {/* File attach */}
+                    <div className="relative">
+                      <button className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 group" style={{ color: "var(--text-secondary)" }}
+                        onClick={() => fileInputRef.current?.click()}>
+                        <Icon name="Paperclip" size={17} />
+                      </button>
+                      <input ref={fileInputRef} type="file" className="hidden"
+                        accept=".pdf,.txt,.zip,.doc,.docx,.xls,.xlsx"
+                        onChange={e => { const f = e.target.files?.[0]; if (f) handleFileUpload(f); e.target.value = ""; }} />
+                    </div>
+                    {/* Image */}
+                    <button className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ color: "var(--text-secondary)" }}
+                      onClick={() => imageInputRef.current?.click()}>
+                      <Icon name="Image" size={17} />
+                    </button>
+                    <input ref={imageInputRef} type="file" className="hidden" accept="image/*"
+                      onChange={e => { const f = e.target.files?.[0]; if (f) handleFileUpload(f, true); e.target.value = ""; }} />
+
+                    <textarea
+                      value={messageInput}
+                      onChange={e => setMessageInput(e.target.value)}
+                      placeholder="Написать сообщение..."
+                      rows={1}
+                      className="flex-1 px-4 py-2.5 rounded-xl resize-none outline-none transition-all"
+                      style={{ background: "var(--bg-surface)", border: "1px solid var(--border-subtle)", color: "var(--text-primary)", fontSize: 13, lineHeight: "1.5", maxHeight: 120 }}
+                      onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+                    />
+                    <button className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ color: "var(--text-secondary)" }}>
+                      <Icon name="Smile" size={17} />
+                    </button>
+                    <button
+                      onClick={messageInput.trim() ? sendMessage : () => setShowVoice(true)}
+                      className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all"
+                      style={{ background: messageInput.trim() ? "linear-gradient(135deg,#00b4d8,#00d4ff)" : "var(--bg-surface)", color: messageInput.trim() ? "#0a0e14" : "var(--text-muted)", boxShadow: messageInput.trim() ? "0 2px 12px rgba(0,212,255,0.3)" : "none" }}>
+                      <Icon name={messageInput.trim() ? "Send" : "Mic"} size={16} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </>
+          )
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center gap-4 animate-fade-in">
-            <div className="w-20 h-20 rounded-2xl flex items-center justify-center glow-cyan" style={{ background: "linear-gradient(135deg, rgba(0,212,255,0.1), rgba(0,229,179,0.1))", border: "1px solid var(--border-accent)" }}>
+            <div className="w-20 h-20 rounded-2xl flex items-center justify-center glow-cyan" style={{ background: "linear-gradient(135deg,rgba(0,212,255,0.1),rgba(0,229,179,0.1))", border: "1px solid var(--border-accent)" }}>
               <Icon name={navItems.find(n => n.section === activeSection)?.icon || "MessageSquare"} size={32} style={{ color: "var(--accent-cyan)" }} />
             </div>
             <div className="text-center">
@@ -544,7 +580,7 @@ export default function Index() {
       </div>
 
       {/* Right Info Panel */}
-      {activeSection === "chats" && activeChat && (
+      {activeSection === "chats" && activeChat && !showGroupInfo && (
         <div className="hidden xl:flex flex-col" style={{ width: 240, background: "var(--bg-panel)", borderLeft: "1px solid var(--border-subtle)" }}>
           <div className="flex flex-col items-center px-4 pt-6 pb-4" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
             <div className="relative mb-3">
@@ -559,28 +595,39 @@ export default function Index() {
             </p>
           </div>
           <div className="px-4 py-4 flex flex-col gap-1">
-            {[{ icon: "Phone", label: "Позвонить" }, { icon: "Video", label: "Видеозвонок" }, { icon: "BellOff", label: "Без звука" }, { icon: "Search", label: "Поиск в чате" }].map(a => (
-              <button key={a.label} className="flex items-center gap-2.5 px-3 py-2 rounded-lg transition-all text-left" style={{ color: "var(--text-secondary)" }}>
+            {[
+              { icon: "Phone", label: "Позвонить" },
+              { icon: "Video", label: "Видеозвонок" },
+              { icon: "BellOff", label: "Без звука" },
+              ...(activeChat.type === "group" ? [{ icon: "Users", label: "Участники" }] : []),
+            ].map(a => (
+              <button key={a.label} onClick={() => a.label === "Участники" && setShowGroupInfo(true)}
+                className="flex items-center gap-2.5 px-3 py-2 rounded-lg transition-all text-left" style={{ color: "var(--text-secondary)" }}>
                 <Icon name={a.icon} size={15} style={{ color: "var(--accent-cyan)" }} />
                 <span style={{ fontSize: 12 }}>{a.label}</span>
               </button>
             ))}
           </div>
           <div className="px-4 mt-2">
-            <p className="text-xs mb-2 px-1" style={{ color: "var(--text-muted)" }}>ВСЕ СООБЩЕНИЯ</p>
-            <p className="text-xs px-1" style={{ color: "var(--text-secondary)" }}>{messages.length} сообщений</p>
+            <p className="text-xs mb-1 px-1" style={{ color: "var(--text-muted)" }}>МЕДИА В ЧАТЕ</p>
+            <div className="grid grid-cols-3 gap-1">
+              {messages.filter(m => m.type === "image" && m.file_url).slice(-6).map((m, i) => (
+                <a key={i} href={m.file_url} target="_blank" rel="noopener noreferrer" className="aspect-square rounded-lg overflow-hidden block">
+                  <img src={m.file_url} className="w-full h-full object-cover" alt="" />
+                </a>
+              ))}
+              {messages.filter(m => m.type === "image").length === 0 && (
+                <p className="col-span-3 text-xs px-1" style={{ color: "var(--text-muted)" }}>Нет медиафайлов</p>
+              )}
+            </div>
           </div>
         </div>
       )}
 
       {/* Modals */}
-      {showCreateChat && (
-        <CreateChatModal onClose={() => setShowCreateChat(false)}
-          onCreated={async (chat) => { setShowCreateChat(false); await loadChats(); const found = chats.find(c => c.id === chat.id); if (found) setActiveChat(found); else { await loadChats(); } }} />
-      )}
-      {showCreateChannel && (
-        <CreateChannelModal onClose={() => setShowCreateChannel(false)} onCreated={async () => { setShowCreateChannel(false); await loadChannels(); }} />
-      )}
+      {showCreateChat && <CreateChatModal onClose={() => setShowCreateChat(false)} onCreated={async () => { setShowCreateChat(false); await loadChats(); }} />}
+      {showCreateChannel && <CreateChannelModal onClose={() => setShowCreateChannel(false)} onCreated={async () => { setShowCreateChannel(false); await loadChannels(); }} />}
+      {showAddContact && <AddContactModal onClose={() => setShowAddContact(false)} onAdded={loadContacts} />}
     </div>
   );
 }
